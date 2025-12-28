@@ -1,34 +1,90 @@
 import logging
+import os
 from abc import ABC, abstractmethod
-import tesserocr
 from PIL import Image
+import torch
+try:
+    import tesserocr
+except ImportError:
+    tesserocr = None
 
 class OCREngine(ABC):
     @abstractmethod
     def predict(self, image_path: str) -> str:
         pass
 
-class TrOCREngine(OCREngine):
-    def __init__(self, model_path: str):
-        self.model_path = model_path
-        self.device = "CPU"
-        logging.info("Initialized Tesseract Engine (TrOCR Fallback)")
+class TesseractEngine(OCREngine):
+    def __init__(self):
+        self.engine_name = "Tesseract (tesserocr)"
+        self.api = None
+        
+        # Discover absolute paths
+        current_file = os.path.abspath(__file__)
+        current_dir = os.path.dirname(current_file)
+        project_root = os.path.dirname(os.path.dirname(current_dir))
+        self.local_tessdata = os.path.join(project_root, "backend", "tessdata")
+        
+        try:
+            if tesserocr and os.path.exists(self.local_tessdata):
+                self.api = tesserocr.PyTessBaseAPI(path=self.local_tessdata)
+                self.api.SetPageSegMode(tesserocr.PSM.SINGLE_LINE)
+                logging.info("Tesseract API initialized.")
+            else:
+                logging.error("Tesseract not available or tessdata missing.")
+        except Exception as e:
+            logging.error(f"Failed to init Tesseract: {e}")
 
     def predict(self, image_path: str) -> str:
+        if self.api is None: return ""
         try:
-            # Use Tesseract as the actual engine since we lack ONNX runtime
             with Image.open(image_path) as img:
-                # Tesseract configuration for single word/line
-                text = tesserocr.image_to_text(img).strip()
+                self.api.SetImage(img)
+                text = self.api.GetUTF8Text().strip()
                 return text if text else ""
         except Exception as e:
-            logging.error(f"OCR Failed: {e}")
+            logging.error(f"Tesseract fail: {e}")
+            return ""
+
+class TransformerOCREngine(OCREngine):
+    def __init__(self):
+        self.model_name = "microsoft/trocr-base-handwritten"
+        self.engine_name = f"TrOCR ({self.model_name})"
+        self.processor = None
+        self.model = None
+        
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            self.device = "mps"
+        elif torch.cuda.is_available():
+            self.device = "cuda"
+        else:
+            self.device = "cpu"
+
+    def _load_model(self):
+        if self.model is not None: return
+        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+        logging.info(f"Loading TrOCR on {self.device}...")
+        self.processor = TrOCRProcessor.from_pretrained(self.model_name, use_fast=True)
+        self.model = VisionEncoderDecoderModel.from_pretrained(self.model_name).to(self.device)
+        logging.info("TrOCR Loaded.")
+
+    def predict(self, image_path: str) -> str:
+        self._load_model()
+        try:
+            with Image.open(image_path).convert("RGB") as img:
+                pixel_values = self.processor(images=img, return_tensors="pt").pixel_values.to(self.device)
+                # Using beam search for quality
+                generated_ids = self.model.generate(pixel_values, max_new_tokens=15, num_beams=4)
+                generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+                return generated_text.strip()
+        except Exception as e:
+            logging.error(f"TrOCR fail: {e}")
             return ""
 
 class OnlineOCREngine(OCREngine):
     def __init__(self, api_key: str, provider: str = "google"):
         self.api_key = api_key
         self.provider = provider
+        self.engine_name = f"Online OCR ({provider})"
         logging.info(f"Initialized Online OCR ({provider})")
 
     def predict(self, image_path: str) -> str:
@@ -47,23 +103,20 @@ class OnlineOCREngine(OCREngine):
         return "c4"
 
 class OCREngineFactory:
+    _engines = {}
+
     @staticmethod
-    def get_engine(config: dict) -> OCREngine:
-        from backend.ocr.cloud_ocr_engines import HybridOCREngine
-        
-        engine_type = config.get("type", "local")
-        local_engine = TrOCREngine(model_path=config.get("model_path", "models/trocr.onnx"))
-        
-        if engine_type == "hybrid":
-            return HybridOCREngine(
-                azure_config=config.get("azure"),
-                google_config=config.get("google"),
-                local_engine=local_engine
-            )
-        
-        if engine_type == "online":
-            return OnlineOCREngine(
-                api_key=config.get("api_key"),
-                provider=config.get("provider", "google")
-            )
-        return local_engine
+    def get_engine(engine_type: str = "tesseract", api_key: str = "") -> OCREngine:
+        if engine_type == "google_cloud" or engine_type == "azure":
+            # Online engines are often session-specific or key-specific, 
+            # but for this factory we'll cache them by type for now.
+            if engine_type not in OCREngineFactory._engines:
+                OCREngineFactory._engines[engine_type] = OnlineOCREngine(api_key=api_key, provider=engine_type.split('_')[0])
+            return OCREngineFactory._engines[engine_type]
+            
+        if engine_type not in OCREngineFactory._engines:
+            if engine_type == "trocr":
+                OCREngineFactory._engines[engine_type] = TransformerOCREngine()
+            else:
+                OCREngineFactory._engines[engine_type] = TesseractEngine()
+        return OCREngineFactory._engines[engine_type]

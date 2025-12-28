@@ -9,3 +9,12 @@ pydantic
 pydantic-settings
 python-jose[cryptography]
 passlib[bcrypt]
+PyMuPDF
+pillow
+pytesseract
+torch
+torchvision
+transformers
+protobuf
+numpy
+opencv-python-headless

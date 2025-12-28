@@ -3,54 +3,60 @@ import ReviewUI from './components/ReviewUI';
 import ApiConfig from './components/ApiConfig';
 import CompactUploader from './components/CompactUploader';
 import ProcessingStatus from './components/ProcessingStatus';
+import PageSelector from './components/PageSelector';
 import axios from 'axios';
 
 function App() {
-  const [appState, setAppState] = useState('idle'); // idle, uploading, processing, review
+  const [appState, setAppState] = useState('idle'); // idle, uploading, page_selection, review
   const [uploadProgress, setUploadProgress] = useState(0);
   const [statusMessage, setStatusMessage] = useState('');
   const [sessionId, setSessionId] = useState(null);
   const [ocrProvider, setOcrProvider] = useState('trocr');
   const [moveLimit, setMoveLimit] = useState(40);
+  const [pendingPages, setPendingPages] = useState([]);
 
   const handleFileSelect = async (file) => {
     setAppState('uploading');
-    setStatusMessage('Initializing Session...');
+    setStatusMessage('Decomposing File...');
     
-    // Fake upload progress for UX
-    let progress = 0;
-    const interval = setInterval(() => {
-      progress += 20;
-      if (progress <= 90) setUploadProgress(progress);
-    }, 200);
+    // Reset state
+    setSessionId(null);
+    setPendingPages([]);
 
     try {
-        // Real Upload
         const formData = new FormData();
         formData.append('file', file);
         formData.append('move_limit', moveLimit.toString());
         
-        const response = await axios.post('http://localhost:8000/api/v1/session/start', formData, {
-            headers: {
-                'Content-Type': 'multipart/form-data'
-            }
-        });
+        const response = await axios.post('http://localhost:8000/api/v1/session/start', formData);
         
-        clearInterval(interval);
-        setUploadProgress(100);
         setSessionId(response.data.session_id);
         
-        // Short delay to show 100%
-        setTimeout(() => {
+        if (response.data.file_type === 'pdf') {
+            setPendingPages(response.data.page_images);
+            setAppState('page_selection');
+        } else {
+            // It's a single image, skip selection
+            setPendingPages(response.data.page_images);
             setAppState('review');
-        }, 500);
+        }
 
     } catch (error) {
-        clearInterval(interval);
         console.error("Upload failed", error);
         setAppState('idle');
-        alert("Failed to upload file. Please ensure backend is running.");
+        alert("Failed to process file. Ensure backend is running and 'poppler' is installed if processing PDFs.");
     }
+  };
+
+  const handleConfirmPages = async (selectedIndices) => {
+      try {
+          await axios.post(`http://localhost:8000/api/v1/session/${sessionId}/select_pages`, {
+              page_indices: selectedIndices
+          });
+          setAppState('review');
+      } catch (error) {
+          alert("Failed to confirm page selection.");
+      }
   };
 
   const handleDownloadPGN = () => {
@@ -151,18 +157,29 @@ function App() {
         {(appState === 'uploading' || appState === 'processing') && (
           <div className="flex flex-col items-center justify-center min-h-[60vh]">
               <ProcessingStatus 
-                status={appState === 'uploading' ? 'Initializing Session...' : 'Preparing Board...'} 
-                progress={uploadProgress}
+                status={appState === 'uploading' ? 'Decomposing Document...' : 'Preparing Board...'} 
+                progress={appState === 'uploading' ? 50 : 100}
                 message={statusMessage}
               />
           </div>
+        )}
+
+        {appState === 'page_selection' && (
+            <PageSelector 
+                pages={pendingPages} 
+                onConfirm={handleConfirmPages} 
+                onCancel={resetSession} 
+            />
         )}
 
         {appState === 'review' && sessionId && (
           <ReviewUI 
             sessionId={sessionId} 
             initialMoves={[]} 
+            initialPageImage={pendingPages[0]} // Pass the first page image
+            ocrProvider={ocrProvider}
             onSessionComplete={handleSessionComplete}
+            onCancel={resetSession}
           />
         )}
       </main>

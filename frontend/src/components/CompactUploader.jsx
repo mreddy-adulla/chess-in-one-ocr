@@ -112,8 +112,8 @@ const CompactUploader = ({ onFileSelect, ocrProvider, setOcrProvider, variant = 
 
       <div className="mt-6">
         <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-1 mb-3 block">Select OCR Engine</label>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {['tesseract', 'trocr', 'google_cloud'].map((provider) => (
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+          {['tesseract', 'trocr', 'azure', 'google_cloud'].map((provider) => (
             <button
               key={provider}
               onClick={(e) => {
@@ -126,13 +126,13 @@ const CompactUploader = ({ onFileSelect, ocrProvider, setOcrProvider, variant = 
                   : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-300 hover:shadow-md'
               }`}
             >
-              <div className="text-xs font-black uppercase opacity-70 mb-0.5 tracking-wider">Provider</div>
-              <div className="font-bold text-sm">
+              <div className="text-[10px] font-black uppercase opacity-70 mb-0.5 tracking-wider">Provider</div>
+              <div className="font-bold text-xs truncate">
                  {provider === 'trocr' ? 'TrOCR (AI)' : provider.charAt(0).toUpperCase() + provider.slice(1).replace('_', ' ')}
               </div>
               {ocrProvider === provider && (
-                <div className="absolute top-3 right-3">
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" /></svg>
+                <div className="absolute top-2 right-2">
+                    <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" /></svg>
                 </div>
               )}
             </button>

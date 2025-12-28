@@ -4,19 +4,23 @@ from typing import List, Dict
 import shutil
 import os
 import time
+import base64
+from io import BytesIO
+from PIL import Image, ImageOps
 
 # Conditional import to handle different execution contexts
 try:
     from backend.models import Game
     from backend.session_manager import session_manager
-    from backend.ocr.trocr_engine import TrOCREngine
+    from backend.ocr.trocr_engine import OCREngineFactory
+    from backend.ocr.segmentation import find_grid_rows, find_grid_columns
 except (ImportError, ModuleNotFoundError):
     from models import Game
     from session_manager import session_manager
-    from ocr.trocr_engine import TrOCREngine
+    from ocr.trocr_engine import OCREngineFactory
+    from ocr.segmentation import find_grid_rows, find_grid_columns
 
 app = FastAPI(title="Chess OCR API", version="8.0.0")
-ocr_engine = TrOCREngine(model_path="models/trocr.onnx")
 
 # Enable CORS for frontend
 app.add_middleware(
@@ -27,7 +31,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory config storage for demonstration
+# In-memory config storage
 ocr_config = {
     "type": "local",
     "provider": "google",
@@ -53,32 +57,47 @@ def update_ocr_config(config: Dict = Body(...)):
 
 @app.post("/api/v1/session/start")
 async def start_session(file: UploadFile = File(...), move_limit: str = "40"):
-    # Save file temporarily
-    upload_dir = "uploads"
-    os.makedirs(upload_dir, exist_ok=True)
-    file_path = f"{upload_dir}/{file.filename}"
-    
-    # Increase hard limit to 40 as requested
     try:
-        limit = int(move_limit)
-    except:
-        limit = 40
+        upload_dir = "uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+        file_path = f"{upload_dir}/{file.filename}"
         
-    actual_limit = min(limit, 40)
+        try:
+            limit = int(move_limit)
+        except:
+            limit = 40
+        actual_limit = min(limit, 60) # Increased to support multi-column
+        
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        print(f"File saved to {file_path}. Starting session...")
+        session_id = session_manager.create_session(file_path, total_rows=actual_limit)
+        session = session_manager.get_session(session_id)
+        
+        return {
+            "session_id": session_id,
+            "total_rows": actual_limit,
+            "status": "ready",
+            "file_type": session.file_type,
+            "page_images": session.page_images
+        }
+    except Exception as e:
+        print(f"ERROR in start_session: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/session/{session_id}/select_pages")
+def select_pages(session_id: str, data: Dict = Body(...)):
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
     
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    # Initialize session with user-defined move limit
-    session_id = session_manager.create_session(file_path, total_rows=actual_limit)
-    
-    print(f"DEBUG: Started session {session_id} with limit {actual_limit}")
-    
-    return {
-        "session_id": session_id,
-        "total_rows": actual_limit,
-        "status": "ready"
-    }
+    session.selected_pages = data.get("page_indices", [0])
+    session.current_row_index = 0
+    session.current_page_idx = 0
+    return {"status": "updated", "selected_count": len(session.selected_pages)}
 
 @app.post("/api/v1/session/{session_id}/process_next")
 def process_next_row(session_id: str, context: Dict = Body(...)):
@@ -86,91 +105,142 @@ def process_next_row(session_id: str, context: Dict = Body(...)):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    if session.current_row_index >= session.total_rows:
+    if session_manager.is_complete(session_id):
         return {"is_complete": True}
 
     row_idx = session.current_row_index
-    ply_start = (row_idx * 2) + 1
+    current_page_idx = session.current_page_idx
+    ply_start = (len(session.processed_moves)) + 1
     
-    # Real Integration Attempt
+    # Get current page image
+    current_page_img = None
+    if session.selected_pages and current_page_idx < len(session.selected_pages):
+        page_idx = session.selected_pages[current_page_idx]
+        if page_idx < len(session.page_images):
+            current_page_img = session.page_images[page_idx]
+
     try:
-        ocr_engine.predict(session.image_path)
-    except Exception:
-        pass
+        if not current_page_img:
+            raise Exception("No page image available")
+            
+        img_data = base64.b64decode(current_page_img)
+        img = Image.open(BytesIO(img_data)).convert('RGB')
+        
+        # 3. User Alignment
+        rotation = context.get("rotation", 0)
+        if rotation:
+            img = img.rotate(-rotation, expand=True)
+            img = img.convert('RGB')
+            
+        w, h = img.size
+        top_margin = context.get("top_margin", 0.25) * h
+        bottom_margin = context.get("bottom_margin", 0.88) * h
+        left_margin = context.get("left_margin", 0.05) * w
+        right_margin = context.get("right_margin", 0.95) * w
+        
+        # 4. Multi-Column Logic (Assuming 20 moves per column block)
+        moves_per_col = 20
+        col_block = row_idx // moves_per_col
+        effective_row_idx = row_idx % moves_per_col
+        num_cols = max(1, (session.total_rows + moves_per_col - 1) // moves_per_col)
+        
+        col_block_width = (right_margin - left_margin) / num_cols
+        cur_x_start = left_margin + (col_block * col_block_width)
+        cur_x_end = cur_x_start + col_block_width
+        
+        # 5. Automated Row Detection
+        moves_area_vertical = img.crop((left_margin, top_margin, right_margin, bottom_margin))
+        row_lines = find_grid_rows(moves_area_vertical, num_rows=moves_per_col)
+        row_h = (bottom_margin - top_margin) / moves_per_col
+        
+        if len(row_lines) >= moves_per_col:
+            y_start = top_margin + row_lines[effective_row_idx]
+            y_end = top_margin + row_lines[effective_row_idx+1] if effective_row_idx + 1 < len(row_lines) else y_start + row_h
+        else:
+            y_start = top_margin + (effective_row_idx * row_h)
+            y_end = y_start + row_h
+            
+        padding = (y_end - y_start) * 0.2
+        y_start, y_end = max(0, y_start - padding), min(h, y_end + padding)
+        
+        row_crop = img.crop((cur_x_start, y_start, cur_x_end, y_end))
+        rw, rh = row_crop.size
+        
+        # 6. Cell-based OCR (White and Black separately)
+        # Proportions: [No (15%)][White (40%)][Black (45%)]
+        white_cell = row_crop.crop((0.15 * rw, 0, 0.55 * rw, rh))
+        black_cell = row_crop.crop((0.55 * rw, 0, 1.0 * rw, rh))
+        
+        engine_type = context.get("ocr_provider", "tesseract")
+        engine = OCREngineFactory.get_engine(engine_type)
+        
+        def run_ocr(cell, name):
+            if engine_type == "tesseract":
+                cell = ImageOps.autocontrast(cell.convert('L'))
+                cell = cell.resize((cell.size[0]*2, cell.size[1]*2), Image.Resampling.LANCZOS)
+            else:
+                if cell.size[0] < 150: cell = cell.resize((cell.size[0]*2, cell.size[1]*2), Image.Resampling.LANCZOS)
+            
+            ext = ".png" if engine_type == "tesseract" else ".jpg"
+            path = f"uploads/temp_{session_id}_{name}{ext}"
+            cell.save(path)
+            res = engine.predict(path)
+            if os.path.exists(path): os.remove(path)
+            return res
 
-    # Complete game moves from the provided scoresheet image
-    game_moves = [
-        ("e4", "e6"),    # 1
-        ("d4", "d5"),    # 2
-        ("Nd2", "dxe4"), # 3
-        ("Nxe4", "Nd7"), # 4
-        ("Nf3", "Ngf6"), # 5
-        ("Nf6", "Nxf6"), # 6 (Correction: Image has Nf6 Nxf6)
-        ("Bd3", "c5"),   # 7
-        ("c3", "cxd4"),  # 8
-        ("cd4", "Be7"),  # 9
-        ("O-O", "O-O"),  # 10
-        ("Re1", "b6"),   # 11
-        ("Be3", "Bb7"),  # 12
-        ("h3", "h6"),    # 13
-        ("Qd2", "Bf3"),  # 14
-        ("gf3", "Nd5"),  # 15
-        ("a3", "Bd6"),   # 16
-        ("Kg2", "Qh4"),  # 17
-        ("Rh1", "f5"),   # 18
-        ("Qe2", "Kh8"),  # 19
-        ("Rag1", "Rac8"),# 20
-        ("Bc2", "Bf4"),  # 21
-        ("Rc1", "Be3"),  # 22
-        ("f3", "f4"),    # 23
-        ("Rh2", "Ne3"),  # 24
-        ("Kh1", "Rf5"),  # 25
-        ("gf2", "Qf2"),  # 26
-        ("Rf2", "Rf7")   # 27
+        w_raw = run_ocr(white_cell, "w")
+        b_raw = run_ocr(black_cell, "b")
+        
+        import re
+        move_pattern = r'[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8][+#]?|O-O(?:-O)?'
+        def clean(t):
+            f = re.findall(move_pattern, t, re.IGNORECASE)
+            return f[0].capitalize() if f else "???"
+
+        w_move, b_move = clean(w_raw), clean(b_raw)
+        row_confidence = 0.9 if (w_move != "???" and b_move != "???") else 0.4
+        
+        print(f"\n--- OCR DEBUG (Row: {row_idx}) ---")
+        print(f"ENGINE: {getattr(engine, 'engine_name', 'Unknown')}")
+        print(f"RAW: W='{w_raw}', B='{b_raw}'")
+        print(f"MOVES: White={w_move}, Black={b_move}")
+        print("-" * 30)
+        
+        buffered = BytesIO()
+        row_crop.save(buffered, format="JPEG")
+        row_img_b64 = base64.b64encode(buffered.getvalue()).decode()
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        w_move, b_move, row_confidence, row_img_b64, w_raw, b_raw = "???", "???", 0.1, None, "", ""
+
+    moves_to_return = [
+        {"ply": ply_start, "san": w_move, "confidence": row_confidence, "debug_raw_text": w_raw},
+        {"ply": ply_start + 1, "san": b_move, "confidence": row_confidence, "debug_raw_text": b_raw}
     ]
-
-    if row_idx < len(game_moves):
-        w_move, b_move = game_moves[row_idx]
-        
-        # Row 2 (Nd2) is the intervention point
-        confidence = 0.85 if row_idx == 2 else 0.99
-        
-        moves_to_return = [
-            {"ply": ply_start, "san": w_move, "confidence": confidence},
-            {"ply": ply_start + 1, "san": b_move, "confidence": confidence}
-        ]
-        
-        # Advance session state BEFORE returning
-        session_manager.advance_session(session_id, moves_to_return)
-        
-        # Simulate small network delay for UX
-        time.sleep(0.4)
-        
-        return {
-            "is_complete": False,
-            "row_index": row_idx,
-            "moves": moves_to_return,
-            "confidence": confidence,
-            "needs_review": confidence < 0.9,
-            "row_image": None 
-        }
-    else:
-        return {"is_complete": True}
+    
+    session_manager.advance_session(session_id, moves_to_return)
+    
+    return {
+        "is_complete": False,
+        "row_index": row_idx,
+        "page_index": session.current_page_idx,
+        "total_pages": len(session.selected_pages),
+        "is_new_page": row_idx == 0,
+        "page_image": current_page_img if row_idx == 0 else None,
+        "moves": moves_to_return,
+        "confidence": row_confidence,
+        "needs_review": row_confidence < 0.85 or row_idx == 0,
+        "row_image": row_img_b64,
+        "debug_raw_text": f"W: {w_raw} | B: {b_raw}"
+    }
 
 @app.get("/api/v1/games", response_model=List[Game])
-def get_games():
-    # Placeholder for database query
-    return []
+def get_games(): return []
 
 @app.post("/api/v1/games")
-def create_game(game: Game):
-    # Placeholder for database insert
-    return {"id": 1, "status": "created"}
+def create_game(game: Game): return {"id": 1, "status": "created"}
 
 @app.get("/api/v1/metrics")
-def get_metrics():
-    return {
-        "queue_depth": 0,
-        "latency_ms": 150,
-        "cpu_usage_percent": 12.5
-    }
+def get_metrics(): return {"queue_depth": 0, "latency_ms": 150, "cpu_usage_percent": 12.5}

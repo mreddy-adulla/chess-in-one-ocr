@@ -7,6 +7,7 @@ class Game(SQLModel, table=True):
     pgn_header: Optional[str] = None
     moves: List["Move"] = Relationship(back_populates="game")
     sources: List["Source"] = Relationship(back_populates="game")
+    clusters: List["PageCluster"] = Relationship(back_populates="game")
 
 class Move(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -22,7 +23,16 @@ class Source(SQLModel, table=True):
     game_id: int = Field(foreign_key="game.id")
     type: str # ocr, sheet
     raw_data: str
+    cluster_id: Optional[int] = Field(default=None, foreign_key="pagecluster.id")
     game: Game = Relationship(back_populates="sources")
+
+class PageCluster(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    game_id: int = Field(foreign_key="game.id")
+    label: str # Source A, Source B
+    inferred_side: Optional[str] = None # white, black
+    confidence: float = 1.0
+    game: Game = Relationship(back_populates="clusters")
 
 class Conflict(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

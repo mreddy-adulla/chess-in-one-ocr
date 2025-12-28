@@ -150,23 +150,25 @@ graph TD
 
 ### 5.1 Data Model (Logical)
 
-One game can have **multiple sources**:
-- White score sheet
-- Black score sheet
-- OCR scan(s)
-- Manual input
+One game can have **multiple sources** derived from a **single mixed PDF**:
+- **Source A** (e.g., Pages 1, 3, 5)
+- **Source B** (e.g., Pages 2, 4)
+- **Unassigned Pages** (Manual review needed)
+- **Manual input**
 
-Raw data is never destroyed.
+Raw data is never destroyed. The system must support **dynamic source clustering** where the affiliation of a page (White vs. Black) is inferred, not hardcoded.
 
 ### 5.2 Move Alignment
 
 #### Component
 - `backend/reconcile/aligner.py`
+- **New:** `backend/reconcile/cluster.py` (Page classification & grouping)
 
 #### Responsibilities
-- Align moves by ply
-- Tolerate missing plies
-- Preserve source identity
+- **Cluster Pages:** Group pages into opposing sources based on move heuristics (parity, range) and visual similarity.
+- **Align Moves:** Align moves by ply across the identified clusters.
+- **Tolerate Missing Metadata:** Do not rely on "White/Black" header fields.
+- **Preserve Source Identity:** Trace every move back to its specific page and line.
 
 ### 5.3 Conflict Resolution
 
@@ -190,8 +192,9 @@ Raw data is never destroyed.
 #### Schema
 - `games`: id, date, pgn_header
 - `moves`: game_id, ply, san, fen, confidence
-- `sources`: game_id, type (ocr/sheet), raw_data
+- `sources`: game_id, type (ocr/sheet), raw_data, **cluster_id (Source A/B)**
 - `conflicts`: move_id, source_a, source_b, reason
+- **New Table:** `page_clusters` (id, game_id, label, inferred_side, confidence)
 
 #### Why SQLite?
 - Zero-configuration (no Postgres docker required)
@@ -427,9 +430,11 @@ No rebuild required.
 
 ```mermaid
 graph TD
-    Input[Images / Sheets] --> OCR[OCR: Tesseract / TrOCR ONNX]
+    Input[Single Mixed PDF] --> Split[Split Pages]
+    Split --> Classify[Classify & Cluster Pages]
+    Classify --> OCR[OCR Pages]
     OCR --> OpenFix[Opening-aware correction]
-    OpenFix --> DualAlign[Dual-notation alignment]
+    OpenFix --> DualAlign[Dual-source alignment]
     DualAlign --> ConflictRes[Conflict resolution]
     ConflictRes --> ConfScore[Confidence scoring]
     ConfScore --> ReviewUI[Review UI: Human decisions]
@@ -440,6 +445,7 @@ graph TD
 
 Explicitly defined failure modes:
 
+- **Clustering Ambiguity:** If system cannot split pages into 2 clear sources, flag all pages as "Unassigned" and require human drag-and-drop grouping.
 - **OCR Failure**: Move marked unresolved, confidence `0.0`, requires manual entry.
 - **Opening Mismatch**: No forced correction; raw OCR output preserved.
 - **Backend Unreachable**: Frontend enters "Offline Mode" (read-only or local cache).

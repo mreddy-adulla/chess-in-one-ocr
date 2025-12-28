@@ -30,7 +30,9 @@ class PageCluster(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     game_id: int = Field(foreign_key="game.id")
     label: str # Source A, Source B
-    inferred_side: Optional[str] = None # white, black
+    inferred_side: Optional[str] = None # white, black, unknown
+    manual_side: Optional[str] = None # white, black (overrides inferred)
+    side_inference_metadata: Optional[str] = None # JSON blob for debugging heuristics
     confidence: float = 1.0
     game: Game = Relationship(back_populates="clusters")
 

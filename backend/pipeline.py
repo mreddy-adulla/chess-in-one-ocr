@@ -1,16 +1,19 @@
 import logging
-from backend.ocr.trocr_engine import TrOCREngine
+from backend.ocr.trocr_engine import OCREngineFactory
 from backend.chess.openings.opening_index import OpeningIndex
 from backend.ocr.merge import merge_with_opening_awareness
 from backend.reconcile.aligner import Aligner
 from backend.reconcile.conflict_resolver import ConflictResolver
 from backend.scoring.confidence import ConfidenceEngine
 
-def run_e2e_pipeline(image_path_a: str, image_path_b: str, eco_openings: list):
+def run_e2e_pipeline(image_path_a: str, image_path_b: str, eco_openings: list, ocr_config: dict = None):
     logging.info("Starting E2E Chess OCR Pipeline")
     
     # 1. OCR
-    engine = TrOCREngine("models/trocr.onnx")
+    if ocr_config is None:
+        ocr_config = {"type": "local", "model_path": "models/trocr.onnx"}
+        
+    engine = OCREngineFactory.get_engine(ocr_config)
     raw_move_a = engine.predict(image_path_a)
     raw_move_b = engine.predict(image_path_b)
     

@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlmodel
+alembic
+python-multipart
+chess
+tesserocr
+pydantic
+pydantic-settings
+python-jose[cryptography]
+passlib[bcrypt]

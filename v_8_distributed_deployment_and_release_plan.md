@@ -231,30 +231,55 @@ Provide **explainable trust signals** to humans.
 
 ## 7. Phase 4 – Review UI (Human‑in‑the‑Loop)
 
-### Design Principles
-- Keyboard‑first
-- Zero clutter
-- Instant confidence visibility
+### 7.1 Objective
+Transform the UI into a modern, compact, and functional dashboard ("chess-in-one-ocr") that supports the full workflow from file upload to PGN export.
 
-### Components
+### 7.2 UI Design & Branding
+- **Name:** `chess-in-one-ocr`
+- **Style:** Modern Minimalist (Tailwind CSS).
+- **Layout:**
+    - **Idle State:** Focused "Hero" card for file upload.
+    - **Review State:** Split-pane dashboard (Source Metadata vs. Move Review).
 
-#### 7.1 Board & Move Sync
-- Click move → board updates
-- Board interaction → move highlight
+### 7.3 Functional Components
 
-#### 7.2 Inline Editing
-- Edit SAN directly
-- Immediate re‑validation
+#### A. `FileUploader.jsx` (Compact)
+- **Design:** Compact dropzone (`h-32` to `h-40`) to avoid consuming screen real estate.
+- **Features:** Drag & drop, visual cues, supports PDF/Images.
+- **Logic:** POST file to backend for asynchronous processing.
 
-#### 7.3 Keyboard Review
-- ← / → navigation
-- Enter = accept
-- E = edit
-- F = flag
+#### B. `ProcessingStatus.jsx`
+- **Purpose:** Visual feedback during OCR/Analysis.
+- **UI:** Progress bar with step descriptions (e.g., "Uploading", "OCR", "Reconciling").
 
-#### 7.4 Confidence Heat‑Map
-- Green / Yellow / Red dots
-- Tooltip explains *why*
+#### C. `ReviewUI.jsx` (Lichess-style Notation)
+- **Presentation:** Standard algebraic notation table.
+    - **Columns:** Move Number | White Move | Black Move.
+    - **Visuals:** Clean typography, row highlighting for current move.
+- **Confidence Indicators:**
+    - Color-coded dots (Green/Yellow/Red) next to moves.
+    - Tooltips explaining confidence score.
+- **Editing:**
+    - Click any move to edit inline.
+    - **Validation:** Immediate legality check against game state.
+    - **Navigation:** Arrow keys to step through the game.
+
+#### D. Interactive Chess Board
+- **Visualization:** Integrated `react-chessboard` component.
+- **Features:**
+    - **Sync:** Updates automatically as user selects moves in the Score Sheet.
+    - **Animation:** Visual feedback as moves are recognized/replayed.
+    - **Playback:** Control buttons to replay the game sequence.
+
+### 7.4 Move Validation Logic
+- **Constraint:** Every move must be legal in the context of the game.
+- **Mechanism:**
+    - Maintain internal game state (using `chess.js` or similar in frontend).
+    - **On Edit/Entry:** Validate move legality.
+    - **Invalid Move:**
+        - Prompt user: "Illegal Move. Please correct."
+        - Prevent forward navigation until resolved.
+        - Option to "Force" (but flag as invalid PGN).
 
 ---
 
@@ -426,22 +451,37 @@ No rebuild required.
 
 ---
 
-## 13. Phase 10 – End‑to‑End Flow
+## 13. Phase 10 – End‑to‑End Interactive Flow (v8.1)
+
+### 13.1 Stepwise Processing Logic
+Instead of a "batch and pray" approach, v8.1 introduces **Interactive Session Processing**:
+
+1.  **Session Start:** User uploads file → Backend creates session ID + segments grid rows.
+2.  **Row-by-Row Loop:**
+    *   Frontend requests `POST /api/v1/session/{id}/process_next`.
+    *   Backend processes *one row* (e.g., 2-4 moves).
+    *   Backend returns moves + confidence + crop image.
+3.  **Human Intervention:**
+    *   **High Confidence:** Frontend auto-advances to next row (500ms delay).
+    *   **Low Confidence / Illegal:** Frontend **PAUSES**.
+    *   User sees the specific row crop, fixes the move, and clicks "Continue".
 
 ```mermaid
 graph TD
-    Input[Single Mixed PDF] --> Split[Split Pages]
-    Split --> Classify[Classify & Cluster Pages]
-    Classify --> OCR[OCR Pages]
-    OCR --> OpenFix[Opening-aware correction]
-    OpenFix --> DualAlign[Dual-source alignment]
-    DualAlign --> ConflictRes[Conflict resolution]
-    ConflictRes --> ConfScore[Confidence scoring]
-    ConfScore --> ReviewUI[Review UI: Human decisions]
-    ReviewUI --> PGN[PGN export]
+    Input[Upload Image] --> Start[Session Created]
+    Start --> ReqRow[Request Next Row]
+    ReqRow --> OCR[OCR & Validate Row]
+    OCR --> Check{Confident & Legal?}
+    Check -- Yes --> Auto[Auto-Advance]
+    Check -- No --> Pause[PAUSE: User Review]
+    Pause --> UserEdit[User Edits Move]
+    UserEdit --> Continue[User Clicks Continue]
+    Auto --> ReqRow
+    Continue --> ReqRow
+    ReqRow --> Done[End of Sheet]
 ```
 
-### 13.1 Failure Handling
+### 13.2 Failure Handling
 
 Explicitly defined failure modes:
 
@@ -466,6 +506,11 @@ Explicitly defined failure modes:
 ✔ LAN + Cloud‑ready backend  
 ✔ SQLite Persistence Layer  
 ✔ Typed API Client  
+✔ **New:** Compact, Branded UI ("chess-in-one-ocr")  
+✔ **New:** Lichess-style Notation View  
+✔ **New:** Inline Move Validation  
+✔ **New:** Interactive Chess Board & Animation  
+✔ **New:** Interactive "Row-by-Row" Processing Mode  
 
 ---
 
@@ -480,4 +525,3 @@ Explicitly defined failure modes:
 ---
 
 **END OF DOCUMENT**
-

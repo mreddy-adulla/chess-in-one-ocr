@@ -4,3 +4,7 @@ This branch implements the production-grade distributed deployment architecture 
 
 ## Implementation Steps
 Refer to [v_8_distributed_deployment_and_release_plan.md](v_8_distributed_deployment_and_release_plan.md) for full details.
+
+### Completed Phases
+- [x] Phase 0: Repository & Branching Foundation
+- [x] Phase 1: Core Chess Intelligence (ECO Loader, Opening Index, Merge logic)

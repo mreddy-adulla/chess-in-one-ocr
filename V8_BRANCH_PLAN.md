@@ -14,3 +14,4 @@ Refer to [v_8_distributed_deployment_and_release_plan.md](v_8_distributed_deploy
 - [x] Phase 5: OCR Runtime (TrOCR Engine stub, device detection skeleton)
 - [x] Phase 6: Distributed Deployment (FastAPI Backend, Health/Metrics, Update script)
 - [x] Phase 7: Networking & Security (Pairing logic, Token generation)
+- [x] Phase 8: Desktop Distribution & Auto-Update (GitHub Actions workflow for Tauri)

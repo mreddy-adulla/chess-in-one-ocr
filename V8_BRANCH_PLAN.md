@@ -10,3 +10,4 @@ Refer to [v_8_distributed_deployment_and_release_plan.md](v_8_distributed_deploy
 - [x] Phase 1: Core Chess Intelligence (ECO Loader, Opening Index, Merge logic)
 - [x] Phase 2: Dual-Notation Reconciliation (Aligner, Conflict Resolver, SQLModel Schema)
 - [x] Phase 3: Confidence System (Confidence Engine)
+- [x] Phase 4: Review UI (React Components, Keyboard Navigation, Confidence Visibility)

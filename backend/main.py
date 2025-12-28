@@ -66,7 +66,7 @@ async def start_session(file: UploadFile = File(...), move_limit: str = "40"):
             limit = int(move_limit)
         except:
             limit = 40
-        actual_limit = min(limit, 60) # Increased to support multi-column
+        actual_limit = min(limit, 60) 
         
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -163,13 +163,14 @@ def process_next_row(session_id: str, context: Dict = Body(...)):
         padding = (y_end - y_start) * 0.2
         y_start, y_end = max(0, y_start - padding), min(h, y_end + padding)
         
+        # Crop the specific row (Full width of column block)
         row_crop = img.crop((cur_x_start, y_start, cur_x_end, y_end))
         rw, rh = row_crop.size
         
-        # 6. Cell-based OCR (White and Black separately)
-        # Proportions: [No (15%)][White (40%)][Black (45%)]
-        white_cell = row_crop.crop((0.15 * rw, 0, 0.55 * rw, rh))
-        black_cell = row_crop.crop((0.55 * rw, 0, 1.0 * rw, rh))
+        # 6. Cell-based Segmentation (Tighter proportions based on feedback)
+        # Proportions: [No (0-18%)][White (18-48%)][Black (48-78%)][Overflow (78-100%)]
+        white_cell = row_crop.crop((0.18 * rw, 0, 0.48 * rw, rh))
+        black_cell = row_crop.crop((0.48 * rw, 0, 0.78 * rw, rh))
         
         engine_type = context.get("ocr_provider", "tesseract")
         engine = OCREngineFactory.get_engine(engine_type)
@@ -186,10 +187,10 @@ def process_next_row(session_id: str, context: Dict = Body(...)):
             cell.save(path)
             res = engine.predict(path)
             if os.path.exists(path): os.remove(path)
-            return res
+            return res, cell
 
-        w_raw = run_ocr(white_cell, "w")
-        b_raw = run_ocr(black_cell, "b")
+        w_raw, w_proc = run_ocr(white_cell, "w")
+        b_raw, b_proc = run_ocr(black_cell, "b")
         
         import re
         move_pattern = r'[KQRBN]?[a-h]?[1-8]?x?[a-h][1-8][+#]?|O-O(?:-O)?'
@@ -200,24 +201,28 @@ def process_next_row(session_id: str, context: Dict = Body(...)):
         w_move, b_move = clean(w_raw), clean(b_raw)
         row_confidence = 0.9 if (w_move != "???" and b_move != "???") else 0.4
         
-        print(f"\n--- OCR DEBUG (Row: {row_idx}) ---")
+        print(f"\n--- CELL OCR DEBUG (Row: {row_idx}) ---")
         print(f"ENGINE: {getattr(engine, 'engine_name', 'Unknown')}")
-        print(f"RAW: W='{w_raw}', B='{b_raw}'")
-        print(f"MOVES: White={w_move}, Black={b_move}")
-        print("-" * 30)
+        print(f"W: '{w_raw}' -> {w_move} | B: '{b_raw}' -> {b_move}")
         
-        buffered = BytesIO()
-        row_crop.save(buffered, format="JPEG")
-        row_img_b64 = base64.b64encode(buffered.getvalue()).decode()
+        # Base64 encode images for UI
+        def to_b64(pill_img):
+            buf = BytesIO()
+            pill_img.save(buf, format="JPEG")
+            return base64.b64encode(buf.getvalue()).decode()
+
+        w_img_64 = to_b64(w_proc)
+        b_img_64 = to_b64(b_proc)
+        row_img_base64 = to_b64(row_crop)
             
     except Exception as e:
         import traceback
         traceback.print_exc()
-        w_move, b_move, row_confidence, row_img_b64, w_raw, b_raw = "???", "???", 0.1, None, "", ""
+        w_move, b_move, row_confidence, row_img_base64, w_raw, b_raw, w_img_64, b_img_64 = "???", "???", 0.1, None, "", "", None, None
 
     moves_to_return = [
-        {"ply": ply_start, "san": w_move, "confidence": row_confidence, "debug_raw_text": w_raw},
-        {"ply": ply_start + 1, "san": b_move, "confidence": row_confidence, "debug_raw_text": b_raw}
+        {"ply": ply_start, "san": w_move, "confidence": row_confidence, "debug_raw_text": w_raw, "cell_image": w_img_64},
+        {"ply": ply_start + 1, "san": b_move, "confidence": row_confidence, "debug_raw_text": b_raw, "cell_image": b_img_64}
     ]
     
     session_manager.advance_session(session_id, moves_to_return)
@@ -232,8 +237,10 @@ def process_next_row(session_id: str, context: Dict = Body(...)):
         "moves": moves_to_return,
         "confidence": row_confidence,
         "needs_review": row_confidence < 0.85 or row_idx == 0,
-        "row_image": row_img_b64,
-        "debug_raw_text": f"W: {w_raw} | B: {b_raw}"
+        "row_image": row_img_base64,
+        "debug_raw_text": f"W: {w_raw} | B: {b_raw}",
+        "w_cell_image": w_img_64,
+        "b_cell_image": b_img_64
     }
 
 @app.get("/api/v1/games", response_model=List[Game])

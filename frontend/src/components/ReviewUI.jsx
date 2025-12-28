@@ -16,9 +16,29 @@ const ReviewUI = ({ initialMoves = [], initialClusters = [], sessionId, initialP
   const [totalPages, setTotalPages] = useState(1);
   const [pageReviewApproved, setPageReviewApproved] = useState(false);
   const [currentRowImage, setCurrentRowImage] = useState(null);
+  const [wCellImage, setWCellImage] = useState(null);
+  const [bCellImage, setBCellImage] = useState(null);
   const [topMargin, setTopMargin] = useState(0.25);
   const [bottomMargin, setBottomMargin] = useState(0.88);
   const [rotation, setRotation] = useState(0);
+
+  useEffect(() => {
+      if (initialPageImage) {
+          setCurrentPagePreview(`data:image/jpeg;base64,${initialPageImage}`);
+      }
+  }, [initialPageImage]);
+
+  // --- Smooth Board Advancement ---
+  useEffect(() => {
+      // If we have more moves in the list than currently shown on the board, 
+      // and we are auto-processing, advance the board ply-by-ply for animation
+      if (moves.length > currentPly && !processingPaused) {
+          const timer = setTimeout(() => {
+              setCurrentPly(prev => prev + 1);
+          }, 600); 
+          return () => clearTimeout(timer);
+      }
+  }, [moves.length, currentPly, processingPaused]);
 
   const resetAlignment = () => {
       setTopMargin(0.25);
@@ -95,6 +115,8 @@ const ReviewUI = ({ initialMoves = [], initialClusters = [], sessionId, initialP
               setCurrentPageIdx(result.page_index || 0);
               setTotalPages(result.total_pages || 1);
               setCurrentRowImage(result.row_image ? `data:image/jpeg;base64,${result.row_image}` : null);
+              setWCellImage(result.w_cell_image ? `data:image/jpeg;base64,${result.w_cell_image}` : null);
+              setBCellImage(result.b_cell_image ? `data:image/jpeg;base64,${result.b_cell_image}` : null);
               
               if (result.is_new_page && result.page_image) {
                   setCurrentPagePreview(`data:image/jpeg;base64,${result.page_image}`);
@@ -121,18 +143,8 @@ const ReviewUI = ({ initialMoves = [], initialClusters = [], sessionId, initialP
       }
   };
 
-  const isInitialMount = useRef(true);
-
-  // Trigger initial processing if we have a session but no moves
-  useEffect(() => {
-      if (isInitialMount.current) {
-          isInitialMount.current = false;
-          // ONLY start processing if page is approved and no moves yet
-          if (sessionId && moves.length === 0 && pageReviewApproved && !processingPaused) {
-              processNextRow();
-          }
-      }
-  }, [sessionId, pageReviewApproved, processingPaused]);
+  // Removed the isInitialMount effect to prevent premature/duplicate processing loops
+  // Users will now explicitly trigger OCR by clicking "Approve & Start OCR"
 
 
   const handleContinue = () => {
@@ -300,11 +312,31 @@ const ReviewUI = ({ initialMoves = [], initialClusters = [], sessionId, initialP
                     {isProcessing ? 'Scanning...' : 'Last Scan'}
                 </span>
             </div>
-            <div className="bg-white rounded-lg p-2 mb-3 shadow-inner flex items-center justify-center min-h-[60px]">
+            <div className="bg-white rounded-lg p-2 mb-3 shadow-inner flex flex-col items-center justify-center min-h-[100px]">
                 {currentRowImage ? (
-                    <img src={currentRowImage} alt="Row Crop" className="w-full max-h-16 object-contain" />
+                    <div className="w-full flex flex-col gap-2">
+                        {/* Full Row (Dimmed) */}
+                        <div className="relative">
+                            <img src={currentRowImage} alt="Row Crop" className="w-full max-h-10 object-contain opacity-30 grayscale" />
+                            <div className="absolute inset-0 flex items-center justify-center">
+                                <span className="text-[8px] font-black text-slate-400 bg-white/80 px-1 rounded">Full Row Context</span>
+                            </div>
+                        </div>
+                        
+                        {/* Individual Cells (Main Focus) */}
+                        <div className="flex gap-2 w-full">
+                            <div className="flex-1 flex flex-col items-center bg-slate-50 p-1.5 rounded-lg border border-indigo-100 shadow-sm">
+                                <span className="text-[7px] font-black text-indigo-500 uppercase mb-1">White AI Input</span>
+                                {wCellImage ? <img src={wCellImage} alt="W" className="max-h-12 object-contain" /> : <div className="h-8 w-full bg-slate-200 animate-pulse rounded" />}
+                            </div>
+                            <div className="flex-1 flex flex-col items-center bg-slate-50 p-1.5 rounded-lg border border-red-100 shadow-sm">
+                                <span className="text-[7px] font-black text-red-500 uppercase mb-1">Black AI Input</span>
+                                {bCellImage ? <img src={bCellImage} alt="B" className="max-h-12 object-contain" /> : <div className="h-8 w-full bg-slate-200 animate-pulse rounded" />}
+                            </div>
+                        </div>
+                    </div>
                 ) : (
-                    <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest italic">Waiting for scan area...</div>
+                    <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest italic text-center px-4">Waiting for scan area alignment...</div>
                 )}
             </div>
             <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/50">
